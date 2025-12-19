@@ -1,0 +1,90 @@
+{
+  "numerical": {
+    "rating": {
+      "min": 1.0,
+      "max": 10.0,
+      "mean": 5.552,
+      "median": 6.0
+    }
+  },
+  "categorical": {
+    "urlDrugName": {
+      "unique_values": [
+        "Zoloft",
+        "Lisinopril",
+        "Synthroid",
+        "Ambien",
+        "Lyrica",
+        "Metformin",
+        "Lexapro",
+        "Prozac",
+        "Lipitor",
+        "Cymbalta"
+      ],
+      "value_counts": {
+        "Lipitor": 319,
+        "Ambien": 315,
+        "Metformin": 311,
+        "Synthroid": 304,
+        "Cymbalta": 298,
+        "Lyrica": 293,
+        "Lexapro": 291,
+        "Lisinopril": 291,
+        "Prozac": 290,
+        "Zoloft": 288
+      }
+    },
+    "condition": {
+      "unique_values": [
+        "Depression",
+        "Pain",
+        "Type 2 Diabetes",
+        "Insomnia",
+        "High Blood Pressure",
+        "Anxiety",
+        "High Cholesterol"
+      ],
+      "value_counts": {
+        "High Blood Pressure": 443,
+        "Insomnia": 439,
+        "High Cholesterol": 435,
+        "Type 2 Diabetes": 424,
+        "Pain": 423,
+        "Depression": 421,
+        "Anxiety": 415
+      }
+    },
+    "sideEffects": {
+      "unique_values": [
+        "Severe Side Effects",
+        "Moderate Side Effects",
+        "Mild Side Effects",
+        "Extremely Severe Side Effects",
+        "No Side Effects"
+      ],
+      "value_counts": {
+        "Moderate Side Effects": 1072,
+        "Mild Side Effects": 867,
+        "Severe Side Effects": 621,
+        "No Side Effects": 295,
+        "Extremely Severe Side Effects": 145
+      }
+    },
+    "effectiveness": {
+      "unique_values": [
+        "Moderately Effective",
+        "Considerably Effective",
+        "Highly Effective",
+        "Marginally Effective",
+        "Ineffective"
+      ],
+      "value_counts": {
+        "Considerably Effective": 891,
+        "Moderately Effective": 791,
+        "Highly Effective": 601,
+        "Marginally Effective": 400,
+        "Ineffective": 317
+      }
+    }
+  }
+}
