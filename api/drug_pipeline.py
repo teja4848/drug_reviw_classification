@@ -31,7 +31,7 @@ from xgboost import XGBClassifier
 # ==============================================================================
 
 BASE_DIR = Path(__file__).parent if "__file__" in dir() else Path(".")
-DB_PATH = BASE_DIR / "db" / "drug_reviews.db"
+DB_PATH = BASE_DIR / "data" / "drug_reviews.db"
 MODELS_DIR = BASE_DIR / "models"
 
 MODELS_DIR.mkdir(parents=True, exist_ok=True)

@@ -1,243 +1,228 @@
 # api/app.py
-"""
-FastAPI service for drug effectiveness prediction.
-Loads the trained model and exposes a /predict endpoint.
-"""
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import joblib
-import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-# Import shared pipeline components so unpickling works
-from drug_pipeline import (
-    TextCombiner,
-    TextPreprocessor,
-    ArrayFlattener,
-    build_preprocessing,
-    make_classifier,
-    EFFECTIVENESS_ORDER,
-    SIDE_EFFECTS_ORDER,
-    decode_effectiveness,
-)
 
 # -----------------------------------------------------------------------------
-# Configuration
+# Imports for class labels
 # -----------------------------------------------------------------------------
-MODEL_PATH = Path("/app/models/global_best_model.pkl")
-
-app = FastAPI(
-    title="Drug Effectiveness Prediction API",
-    description="FastAPI service for predicting drug effectiveness from patient reviews",
-    version="1.0.0",
-)
-
-
-# -----------------------------------------------------------------------------
-# Load model at startup
-# -----------------------------------------------------------------------------
-def load_model(path: Path):
-    """Load the trained model from disk."""
-    if not path.exists():
-        raise FileNotFoundError(f"Model file not found: {path}")
-
-    print(f"Loading model from: {path}")
-    m = joblib.load(path)
-    print("✓ Model loaded successfully!")
-    print(f"  Model type: {type(m).__name__}")
-    if hasattr(m, "named_steps"):
-        print(f"  Pipeline steps: {list(m.named_steps.keys())}")
-    return m
-
-
 try:
-    model = load_model(MODEL_PATH)
-except Exception as e:
-    print(f"✗ ERROR: Failed to load model from {MODEL_PATH}")
-    print(f"  Error: {e}")
-    model = None
+    from drug_pipeline import EFFECTIVENESS_CLASSES
+except Exception:
+    try:
+        from api.drug_pipeline import EFFECTIVENESS_CLASSES
+    except Exception:
+        from .drug_pipeline import EFFECTIVENESS_CLASSES
 
 
 # -----------------------------------------------------------------------------
-# Request / Response Schemas
+# Paths
 # -----------------------------------------------------------------------------
-class DrugReviewInput(BaseModel):
-    """Single drug review input for prediction."""
-    urlDrugName: str = Field(..., description="Name of the drug")
-    condition: str = Field(..., description="Medical condition being treated")
-    benefitsReview: str = Field("", description="Review text about benefits")
-    sideEffectsReview: str = Field("", description="Review text about side effects")
-    commentsReview: str = Field("", description="Additional comments")
-    rating: float = Field(..., ge=1, le=10, description="Overall rating (1-10)")
-    sideEffects: str = Field(
-        "Moderate Side Effects",
-        description="Side effects severity category"
-    )
+MODEL_CANDIDATES = [
+    Path("/app/models/global_best_model.pkl"),
+    Path("/app/models/global_best_model.joblib"),
+    Path("models/global_best_model.pkl"),
+    Path("models/global_best_model.joblib"),
+    Path("models/global_best_model_optuna.pkl"),   # you have this in explorer
+]
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "urlDrugName": "Lipitor",
-                "condition": "High Cholesterol",
-                "benefitsReview": "This medication helped lower my cholesterol significantly.",
-                "sideEffectsReview": "Some minor muscle aches but manageable.",
-                "commentsReview": "Overall satisfied with the results.",
-                "rating": 8.0,
-                "sideEffects": "Mild Side Effects",
-            }
-        }
+TFIDF_CANDIDATES = [
+    Path("/app/models/tfidf_vectorizer.joblib"),
+    Path("models/tfidf_vectorizer.joblib"),
+]
+
+app = FastAPI(title="Drug Effectiveness Prediction API", version="1.0.0")
+
+model = None
+tfidf = None
+MODEL_PATH_USED: Optional[str] = None
+TFIDF_PATH_USED: Optional[str] = None
 
 
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+def pick_existing(paths: List[Path]) -> Optional[Path]:
+    for p in paths:
+        if p.exists():
+            return p
+    return None
+
+
+def decode_effectiveness(pred: Any) -> str:
+    if pred is None:
+        return "Unknown"
+    if isinstance(pred, str):
+        return pred
+    try:
+        idx = int(pred)
+        if 0 <= idx < len(EFFECTIVENESS_CLASSES):
+            return EFFECTIVENESS_CLASSES[idx]
+    except Exception:
+        pass
+    return str(pred)
+
+
+def normalize_text_only(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return ONLY the text fields (what the vectorizer needs).
+    Accept both camelCase and snake_case.
+    """
+    df = df.copy()
+
+    rename_map = {
+        "benefitsReview": "benefits_review",
+        "sideEffectsReview": "side_effects_review",
+        "commentsReview": "comments_review",
+    }
+    for src, dst in rename_map.items():
+        if src in df.columns and dst not in df.columns:
+            df[dst] = df[src]
+
+    for col in ["benefits_review", "side_effects_review", "comments_review"]:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str)
+
+    return df[["benefits_review", "side_effects_review", "comments_review"]]
+
+
+def combine_text(df_text: pd.DataFrame) -> pd.Series:
+    return df_text.fillna("").astype(str).agg(" ".join, axis=1)
+
+
+def predict_with_fallback(df_text: pd.DataFrame):
+    """
+    1) If model is a Pipeline that can handle DataFrame -> model.predict(df_text)
+    2) Else if tfidf is available -> tfidf.transform(combined_text) -> model.predict(X)
+    """
+    global model, tfidf
+
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded.")
+
+    # Try pipeline first (if it exists)
+    try:
+        # Many pipelines accept DataFrame; if it works, use it
+        preds = model.predict(df_text)
+        proba = model.predict_proba(df_text) if hasattr(model, "predict_proba") else None
+        return preds, proba
+    except Exception:
+        pass
+
+    # Fallback: model expects numeric features, so use TF-IDF
+    if tfidf is None:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Model appears to require TF-IDF features, but tfidf_vectorizer.joblib "
+                "was not found/loaded. Please ensure it exists in models/."
+            ),
+        )
+
+    combined = combine_text(df_text)
+    X = tfidf.transform(combined)
+
+    preds = model.predict(X)
+    proba = model.predict_proba(X) if hasattr(model, "predict_proba") else None
+    return preds, proba
+
+
+# -----------------------------------------------------------------------------
+# Startup
+# -----------------------------------------------------------------------------
+@app.on_event("startup")
+def startup():
+    global model, tfidf, MODEL_PATH_USED, TFIDF_PATH_USED
+
+    mp = pick_existing(MODEL_CANDIDATES)
+    if mp is None:
+        print("✗ No model file found in:", [str(p) for p in MODEL_CANDIDATES])
+        model = None
+    else:
+        MODEL_PATH_USED = str(mp)
+        print(f"Loading model: {MODEL_PATH_USED}")
+        model = joblib.load(mp)
+        print("✓ Model loaded:", type(model).__name__)
+
+    tp = pick_existing(TFIDF_CANDIDATES)
+    if tp is not None:
+        TFIDF_PATH_USED = str(tp)
+        print(f"Loading TF-IDF vectorizer: {TFIDF_PATH_USED}")
+        tfidf = joblib.load(tp)
+        print("✓ TF-IDF loaded:", type(tfidf).__name__)
+    else:
+        tfidf = None
+        print("⚠️ TF-IDF vectorizer not found (ok only if model is full pipeline).")
+
+
+# -----------------------------------------------------------------------------
+# Schemas
+# -----------------------------------------------------------------------------
 class PredictRequest(BaseModel):
-    """
-    Prediction request with list of instances (dicts of features).
-    """
-    instances: List[Dict[str, Any]] = Field(
-        ..., description="List of drug review instances to predict"
-    )
+    instances: List[Dict[str, Any]] = Field(...)
 
 
 class PredictionResponse(BaseModel):
-    """Response containing predictions."""
-    predictions: List[str] = Field(..., description="Predicted effectiveness labels")
-    probabilities: Optional[List[Dict[str, float]]] = Field(
-        None, description="Class probabilities for each prediction"
-    )
+    predictions: List[str]
+    probabilities: Optional[List[Dict[str, float]]] = None
 
 
 # -----------------------------------------------------------------------------
-# Health Check Endpoint
+# Endpoints
 # -----------------------------------------------------------------------------
 @app.get("/health")
-def health_check():
-    """Health check endpoint for container orchestration."""
+def health():
     return {
         "status": "healthy",
         "model_loaded": model is not None,
+        "tfidf_loaded": tfidf is not None,
+        "model_path": MODEL_PATH_USED,
+        "tfidf_path": TFIDF_PATH_USED,
     }
 
 
-# -----------------------------------------------------------------------------
-# Prediction Endpoint
-# -----------------------------------------------------------------------------
-@app.post("/predict", response_model=PredictionResponse)
-def predict(request: PredictRequest):
-    """
-    Predict drug effectiveness from review data.
-    
-    Accepts a list of instances, each containing:
-    - urlDrugName: Drug name
-    - condition: Medical condition
-    - benefitsReview: Benefits review text
-    - sideEffectsReview: Side effects review text
-    - commentsReview: Additional comments
-    - rating: Overall rating (1-10)
-    - sideEffects: Side effects severity category
-    
-    Returns predicted effectiveness labels and optional probabilities.
-    """
-    if model is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Model not loaded. Please check server logs.",
-        )
+@app.get("/model-info")
+def model_info():
+    return {
+        "model_type": type(model).__name__ if model is not None else None,
+        "tfidf_type": type(tfidf).__name__ if tfidf is not None else None,
+        "classes": EFFECTIVENESS_CLASSES,
+        "model_path": MODEL_PATH_USED,
+        "tfidf_path": TFIDF_PATH_USED,
+        "pipeline_steps": list(getattr(model, "named_steps", {}).keys()) if hasattr(model, "named_steps") else None,
+    }
 
-    instances = request.instances
-    if not instances:
-        raise HTTPException(
-            status_code=400,
-            detail="No instances provided for prediction.",
-        )
+
+@app.post("/predict", response_model=PredictionResponse)
+def predict(req: PredictRequest):
+    if not req.instances:
+        raise HTTPException(status_code=400, detail="No instances provided.")
 
     try:
-        # Convert to DataFrame
-        df = pd.DataFrame(instances)
-        
-        # Ensure required columns exist
-        required_cols = [
-            "urlDrugName", "condition", "benefitsReview",
-            "sideEffectsReview", "commentsReview", "rating", "sideEffects"
-        ]
-        for col in required_cols:
-            if col not in df.columns:
-                if col in ["benefitsReview", "sideEffectsReview", "commentsReview"]:
-                    df[col] = ""
-                elif col == "sideEffects":
-                    df[col] = "Moderate Side Effects"
-                else:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Missing required field: {col}",
-                    )
+        df_raw = pd.DataFrame(req.instances)
+        df_text = normalize_text_only(df_raw)
 
-        # Make predictions
-        predictions_encoded = model.predict(df)
-        predictions = [decode_effectiveness(p) for p in predictions_encoded]
+        preds, proba = predict_with_fallback(df_text)
+        labels = [decode_effectiveness(p) for p in preds]
 
-        # Get probabilities if available
-        probabilities = None
-        if hasattr(model, "predict_proba"):
-            try:
-                proba = model.predict_proba(df)
-                probabilities = [
-                    {EFFECTIVENESS_ORDER[i]: float(p[i]) for i in range(len(EFFECTIVENESS_ORDER))}
-                    for p in proba
-                ]
-            except Exception:
-                pass  # Some models don't support predict_proba
+        probs_out = None
+        if proba is not None:
+            probs_out = [
+                {EFFECTIVENESS_CLASSES[i]: float(row[i]) for i in range(len(EFFECTIVENESS_CLASSES))}
+                for row in proba
+            ]
 
-        return PredictionResponse(
-            predictions=predictions,
-            probabilities=probabilities,
-        )
+        return PredictionResponse(predictions=labels, probabilities=probs_out)
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Prediction failed: {str(e)}",
-        )
-
-
-# -----------------------------------------------------------------------------
-# Model Info Endpoint
-# -----------------------------------------------------------------------------
-@app.get("/model-info")
-def model_info():
-    """Get information about the loaded model."""
-    if model is None:
-        return {"error": "Model not loaded"}
-    
-    info = {
-        "model_type": type(model).__name__,
-        "effectiveness_classes": EFFECTIVENESS_ORDER,
-        "side_effects_categories": SIDE_EFFECTS_ORDER,
-    }
-    
-    if hasattr(model, "named_steps"):
-        info["pipeline_steps"] = list(model.named_steps.keys())
-    
-    return info
-
-
-# -----------------------------------------------------------------------------
-# Single Prediction Endpoint (Convenience)
-# -----------------------------------------------------------------------------
-@app.post("/predict-single")
-def predict_single(review: DrugReviewInput):
-    """
-    Predict effectiveness for a single drug review.
-    Convenience endpoint that accepts a single review object.
-    """
-    request = PredictRequest(instances=[review.model_dump()])
-    response = predict(request)
-    
-    return {
-        "prediction": response.predictions[0],
-        "probabilities": response.probabilities[0] if response.probabilities else None,
-    }
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
