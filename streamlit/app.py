@@ -114,10 +114,19 @@ def load_example(name: str):
 with st.sidebar:
     st.title("💊 Drug Review Classifier")
 
-    st.markdown("### 📚 Demo Examples")
-    for ex_name in EXAMPLES.keys():
-        if st.button(ex_name, use_container_width=True):
-            load_example(ex_name)
+    st.markdown(
+        """
+**Goal:** Classify a patient drug review into one of five effectiveness categories:
+
+1. User enters review text (benefits, side effects, additional comments) and context fields.
+2. The Streamlit UI sends the input to a FastAPI backend (`/predict`).
+3. The backend runs a trained ML model and returns:
+   - Predicted effectiveness class  
+   - class probabilities (confidence)
+
+**Note:** In current model version, predictions are primarily driven by the **review text**.
+"""
+    )
 
     st.markdown("---")
     st.markdown("### 🔗 API Status")
@@ -139,36 +148,13 @@ with st.sidebar:
 # -----------------------------
 # Main content
 # -----------------------------
-st.title("Drug Effectiveness Prediction (Text Classification)")
+st.title("😷 Drug Effectiveness Prediction (Text Classification)")
 st.caption("Predict effectiveness class from patient review text (TF-IDF + ML).")
-
-# Explain app (great for grading / demo)
-with st.expander("📌 What is this app? (Project Summary)", expanded=True):
-    st.markdown(
-        """
-**Goal:** Classify a patient drug review into one of five effectiveness categories:
-
-- Ineffective  
-- Marginally Effective  
-- Moderately Effective  
-- Considerably Effective  
-- Highly Effective  
-
-**How it works (high level):**
-1. User enters review text (benefits, side effects, additional comments) and context fields.
-2. The Streamlit UI sends the input to a FastAPI backend (`/predict`).
-3. The backend runs a trained ML model and returns:
-   - Predicted effectiveness class  
-   - Optional class probabilities (confidence)
-
-**Important note:** In your current model version, predictions are primarily driven by the **review text**.
-"""
-    )
 
 # -----------------------------
 # Input form
 # -----------------------------
-st.markdown("## 📝 Enter Review Details")
+st.markdown("## 🩺 Enter Review Details")
 
 c1, c2, c3, c4 = st.columns([1.2, 1.2, 1, 1])
 
@@ -183,7 +169,7 @@ with c4:
                                index=SIDE_EFFECTS_OPTIONS.index(st.session_state.get("sideEffects", "Moderate Side Effects")),
                                key="sideEffects")
 
-st.markdown("### 🧾 Review Text (Most important)")
+st.markdown("### 🏥 Review Text")
 benefitsReview = st.text_area("Benefits Review", key="benefitsReview", height=120,
                               placeholder="Describe benefits and improvements...")
 sideEffectsReview = st.text_area("Side Effects Review", key="sideEffectsReview", height=120,
@@ -202,7 +188,7 @@ st.info(
 colA, colB = st.columns([1, 2])
 
 with colA:
-    predict_btn = st.button("🔮 Predict Effectiveness", type="primary", use_container_width=True)
+    predict_btn = st.button("⚕️ Predict Effectiveness", type="primary", use_container_width=True)
 
 with colB:
     st.caption(f"Backend: `{PREDICT_URL}`")
